@@ -21,7 +21,7 @@ val gitCommitHash = "git rev-parse --verify --short HEAD".execute()
 // also the soname
 val moduleId by extra("build_var_spoof")
 val moduleName by extra("Build var Spoof")
-val author by extra("Irena")
+val author by extra("Irena & Memory2314")
 val description by extra("Build vars Spoofing")
 val verName by extra("v1.0.0")
 val verCode by extra(gitCommitCount)
