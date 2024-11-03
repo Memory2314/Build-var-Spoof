@@ -3,7 +3,7 @@ MODPATH="${0%/*}"
 # ensure not running in busybox ash standalone shell
 set +o standalone
 unset ASH_STANDALONE
-sh $MODPATH/autopif.sh || exit 1
+sh $MODPATH/autopif2.sh || exit 1
 
 echo -e "\nDone!"
 if [ "$KSU" != "true" -a "$APATCH" != "true" ]; then
