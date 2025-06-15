@@ -1,126 +1,98 @@
-#!/system/bin/sh
+#!/bin/sh
+PATH=/data/adb/ap/bin:/data/adb/ksu/bin:/data/adb/magisk:/data/data/com.termux/files/usr/bin:$PATH
+MODDIR=/data/adb/modules/build_var_spoof
 
-if [ "$USER" != "root" -a "$(whoami 2>/dev/null)" != "root" ]; then
-  echo "autopif2: need root permissions"; exit 1;
-fi;
-case "$HOME" in
-  *termux*) echo "autopif2: need su root environment"; exit 1;;
-esac;
+download() { busybox wget -T 10 --no-check-certificate -qO - "$1" > "$2" || download_fail "$1"; }
+if command -v curl > /dev/null 2>&1; then
+    download() { curl --connect-timeout 10 -s "$1" > "$2" || download_fail "$1"; }
+fi
 
-case "$1" in
-  -h|--help|help) echo "sh autopif2.sh [-a]"; exit 0;;
-  -a|--advanced|advanced) ARGS="-a"; shift;;
-esac;
-
-echo "Pixel Beta pif.json generator script \
-  \n  by osm0sis @ xda-developers & Memory2314";
-
-case "$0" in
-  *.sh) DIR="$0";;
-  *) DIR="$(lsof -p $$ 2>/dev/null | grep -o '/.*autopif2.sh$')";;
-esac;
-DIR=$(dirname "$(readlink -f "$DIR")");
-
-item() { echo "\n- $@"; }
-die() { echo "\nError: $@, install busybox!"; exit 1; }
-
-find_busybox() {
-  [ -n "$BUSYBOX" ] && return 0;
-  local path;
-  for path in /data/adb/modules/busybox-ndk/system/*/busybox /data/adb/magisk/busybox /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox; do
-    if [ -f "$path" ]; then
-      BUSYBOX="$path";
-      return 0;
-    fi;
-  done;
-  return 1;
+download_fail() {
+	echo "[!] download failed!"
+	echo "[x] bailing out!"
+	exit 1
 }
 
-if ! which wget >/dev/null || grep -q "wget-curl" $(which wget); then
-  if ! find_busybox; then
-    die "wget not found";
-  elif $BUSYBOX ping -c1 -s2 android.com 2>&1 | grep -q "bad address"; then
-    die "wget broken";
-  else
-    wget() { $BUSYBOX wget "$@"; }
-  fi;
-fi;
+set_random_beta() {
+    if [ "$(echo "$MODEL_LIST" | wc -l)" -ne "$(echo "$PRODUCT_LIST" | wc -l)" ]; then
+            echo "Error: MODEL_LIST and PRODUCT_LIST have different lengths."
+            exit 1
+    fi
+    count=$(echo "$MODEL_LIST" | wc -l)
+    rand_index=$(( $$ % count ))
+    MODEL=$(echo "$MODEL_LIST" | sed -n "$((rand_index + 1))p")
+    PRODUCT=$(echo "$PRODUCT_LIST" | sed -n "$((rand_index + 1))p")
+    OTA=$(echo "$OTA_LIST" | sed -n "$((rand_index + 1))p")
+    DEVICE=$(echo "$PRODUCT" | sed 's/_beta//')
+}
 
-if date -D '%s' -d "$(date '+%s')" 2>&1 | grep -qE "bad date|invalid option"; then
-  if ! find_busybox; then
-    die "date broken";
-  else
-    date() { $BUSYBOX date "$@"; }
-  fi;
-fi;
+sleep_pause() {
+    # APatch and KernelSU needs this
+    # but not KSU_NEXT, MMRL
+    if [ -z "$MMRL" ] && [ -z "$KSU_NEXT" ] && { [ "$KSU" = "true" ] || [ "$APATCH" = "true" ]; }; then
+        sleep 5
+    fi
+}
 
-if ! echo "A\nB" | grep -m1 -A1 "A" | grep -q "B"; then
-  if ! find_busybox; then
-    die "grep broken";
-  else
-    grep() { $BUSYBOX grep "$@"; }
-  fi;
-fi;
+TEMPDIR="$MODDIR/temp"
+rm -rf "$TEMPDIR"
+mkdir -p "$TEMPDIR"
+cd "$TEMPDIR"
 
-if [ "$DIR" = /data/adb/modules/build_var_spoof ]; then
-  DIR=$DIR/autopif2;
-  mkdir -p $DIR;
-fi;
-cd "$DIR";
+# Get latest Pixel Beta information
+echo "- Get latest Pixel Beta information"
+download https://developer.android.com/about/versions PIXEL_VERSIONS_HTML
+BETA_URL=$(grep -o 'https://developer.android.com/about/versions/.*[0-9]"' PIXEL_VERSIONS_HTML | sort -ru | cut -d\" -f1 | head -n1)
+download "$BETA_URL" PIXEL_LATEST_HTML
 
-item "Crawling Android Developers for latest Pixel Beta ...";
-wget -q -O PIXEL_VERSIONS_HTML --no-check-certificate https://developer.android.com/about/versions 2>&1 || exit 1;
-wget -q -O PIXEL_LATEST_HTML --no-check-certificate $(grep -m1 'developer.android.com/about/versions/' PIXEL_VERSIONS_HTML | cut -d\" -f2) 2>&1 || exit 1;
-wget -q -O PIXEL_OTA_HTML --no-check-certificate https://developer.android.com$(grep -om1 'href=".*download-ota"' PIXEL_LATEST_HTML | cut -d\" -f2) 2>&1 || exit 1;
-grep -m1 -o 'data-category.*Beta' PIXEL_OTA_HTML | cut -d\" -f2;
+# Handle Developer Preview vs Beta
+echo "- Handle Developer Preview vs Beta"
+if grep -qE 'Developer Preview|tooltip>.*preview program' PIXEL_LATEST_HTML && [ "$FORCE_PREVIEW" = 0 ]; then
+	# Use the second latest version for beta
+	echo "- Use the second latest version for beta"
+	BETA_URL=$(grep -o 'https://developer.android.com/about/versions/.*[0-9]"' PIXEL_VERSIONS_HTML | sort -ru | cut -d\" -f1 | head -n2 | tail -n1)
+	download "$BETA_URL" PIXEL_BETA_HTML
+else
+	mv -f PIXEL_LATEST_HTML PIXEL_BETA_HTML
+fi
 
-BETA_REL_DATE="$(date -D '%B %e, %Y' -d "$(grep -m1 -A1 'Release date' PIXEL_OTA_HTML | tail -n1 | sed 's;.*<td>\(.*\)</td>.*;\1;')" '+%Y-%m-%d')";
-BETA_EXP_DATE="$(date -D '%s' -d "$(($(date -D '%Y-%m-%d' -d "$BETA_REL_DATE" '+%s') + 60 * 60 * 24 * 7 * 6))" '+%Y-%m-%d')";
-echo "Beta Released: $BETA_REL_DATE \
-  \nEstimated Expiry: $BETA_EXP_DATE";
+# Get OTA information
+echo "- Get OTA information"
+OTA_URL="https://developer.android.com$(grep -o 'href=".*download-ota.*"' PIXEL_BETA_HTML | cut -d\" -f2 | head -n1)"
+download "$OTA_URL" PIXEL_OTA_HTML
 
-MODEL_LIST="$(grep -A1 'tr id=' PIXEL_OTA_HTML | grep 'td' | sed 's;.*<td>\(.*\)</td>;\1;')";
-PRODUCT_LIST="$(grep -o 'ota/.*_beta' PIXEL_OTA_HTML | cut -d\/ -f2)";
-OTA_LIST="$(grep 'ota/.*_beta' PIXEL_OTA_HTML | cut -d\" -f2)";
+# Extract device information
+MODEL_LIST="$(grep -A1 'tr id=' PIXEL_OTA_HTML | grep 'td' | sed 's;.*<td>\(.*\)</td>;\1;')"
+PRODUCT_LIST="$(grep -o 'tr id="[^"]*"' PIXEL_OTA_HTML | awk -F\" '{print $2 "_beta"}')"
+OTA_LIST="$(grep 'ota/.*_beta' PIXEL_OTA_HTML | cut -d\" -f2)"
 
-case "$1" in
-  -m)
-    DEVICE="$(getprop ro.product.device)";
-    case "$PRODUCT_LIST" in
-      *${DEVICE}_beta*)
-        MODEL="$(getprop ro.product.model)";
-        PRODUCT="${DEVICE}_beta";
-        OTA="$(echo "$OTA_LIST" | grep "$PRODUCT")";
-      ;;
-    esac;
-  ;;
-esac;
-item "Selecting Pixel Beta device ...";
-if [ -z "$PRODUCT" ]; then
-  set_random_beta() {
-    local list_count="$(echo "$MODEL_LIST" | wc -l)";
-    local list_rand="$((RANDOM % $list_count + 1))";
-    local IFS=$'\n';
-    set -- $MODEL_LIST;
-    MODEL="$(eval echo \${$list_rand})";
-    set -- $PRODUCT_LIST;
-    PRODUCT="$(eval echo \${$list_rand})";
-    set -- $OTA_LIST;
-    OTA="$(eval echo \${$list_rand})";
-    DEVICE="$(echo "$PRODUCT" | sed 's/_beta//')";
-  }
-  set_random_beta;
-fi;
-echo "$MODEL ($PRODUCT)";
+# Select and configure device
+echo "- Selecting Pixel Beta device ..."
+[ -z "$PRODUCT" ] && set_random_beta
+echo "$MODEL ($PRODUCT)"
 
-(ulimit -f 2; wget -q -O PIXEL_ZIP_METADATA --no-check-certificate $OTA) 2>/dev/null;
-FINGERPRINT="$(grep -am1 'post-build=' PIXEL_ZIP_METADATA | cut -d= -f2)";
-SECURITY_PATCH="$(grep -am1 'security-patch-level=' PIXEL_ZIP_METADATA | cut -d= -f2)";
-if [ -z "$FINGERPRINT" -o -z "$SECURITY_PATCH" ]; then
-  echo "\nError: Failed to extract information from metadata!";
-  exit 1;
-fi;
+# Get device fingerprint and security patch from OTA metadata
+(ulimit -f 2; download "$(echo "$OTA_LIST" | grep "$PRODUCT")" PIXEL_ZIP_METADATA) >/dev/null 2>&1
+FINGERPRINT="$(strings PIXEL_ZIP_METADATA | grep -am1 'post-build=' | cut -d= -f2)"
+SECURITY_PATCH="$(strings PIXEL_ZIP_METADATA | grep -am1 'security-patch-level=' | cut -d= -f2)"
 
+# Validate required field to prevent empty spoof_build_vars
+if [ -z "$FINGERPRINT" ] || [ -z "$SECURITY_PATCH" ]; then
+	# link to download pixel rom metadata that skipped connection check due to ulimit
+	download_fail "https://dl.google.com"
+fi
+
+# Preserve previous setting
+spoofConfig="spoofVendingSdk"
+for config in $spoofConfig; do
+	if grep -q "\"$config\": true" "$MODDIR/spoof_build_vars"; then
+		eval "$config=true"
+	else
+		eval "$config=false"
+	fi
+done
+
+echo "- Dumping values to spoof_build_vars ..."
 if [ -n "$FINGERPRINT" ]; then
     BRAND=$(echo $FINGERPRINT | cut -d'/' -f1)
     PRODUCT=$(echo $FINGERPRINT | cut -d'/' -f2)
@@ -131,15 +103,13 @@ if [ -n "$FINGERPRINT" ]; then
     TYPE=$(echo $FINGERPRINT | cut -d':' -f3 | cut -d'/' -f1)
     TAGS=$(echo $FINGERPRINT | cut -d':' -f3 | cut -d'/' -f2)
 fi
-
-item "Dumping values to minimal build_var_spoof ...";
-cat <<EOF | tee /data/adb/build_var_spoof/spoof_build_vars;
-MANUFACTURER=$BRAND
-BRAND=$BRAND
-DEVICE=$DEVICE
-PRODUCT=$PRODUCT
+cat <<EOF | tee spoof_build_vars
+MANUFACTURER=Google
 MODEL=$MODEL
 FINGERPRINT=$FINGERPRINT
+BRAND=$BRAND
+PRODUCT=$PRODUCT
+DEVICE=$DEVICE
 RELEASE=$RELEASE
 ID=$ID
 INCREMENTAL=$INCREMENTAL
@@ -148,5 +118,16 @@ TAGS=$TAGS
 SECURITY_PATCH=$SECURITY_PATCH
 EOF
 
-item "Killing any running GMS DroidGuard process ...";
-killall -v com.google.android.gms.unstable || true;
+cat "$TEMPDIR/spoof_build_vars" > /data/adb/build_var_spoof/spoof_build_vars
+echo "- new spoof_build_vars saved to data/adb/build_var_spoof/spoof_build_vars"
+
+echo "- Cleaning up ..."
+rm -rf "$TEMPDIR"
+
+for i in $(busybox pidof com.google.android.gms.unstable); do
+	echo "- Killing pid $i"
+	kill -9 "$i"
+done
+
+echo "- Done!"
+sleep_pause
